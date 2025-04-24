@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="data:,">
+    <title>Web Video Demo</title>
+</head>
+<script>
+const timeout = 3000
+const url = '/stream/default/1'
+
+const concatArrayBuffers = (...bufs) => {
+    const result = new Uint8Array(bufs.reduce((totalSize, buf) => totalSize + buf.byteLength, 0))
+    bufs.reduce((offset, buf) => {
+        result.set(buf, offset)
+        return offset + buf.byteLength
+    }, 0)
+    return result.buffer
+}
+
+const acceptableReadPacketStates = ['opening', 'listening', 'playing']
+
+const listeners = {
+    mse: {
+        sourceopen: function() {
+            this.removeEvents('mse')
+            URL.revokeObjectURL(this.videoEl.src)
+            try {
+                this.sourceBuffer = this.mse.addSourceBuffer('video/mp4; codecs="hvc1.1.6.L153.B0"')
+            } catch {
+                this.reopen('Could not create SourceBuffer', timeout)
+                return
+            }
+            this.sourceBuffer.mode = 'segments'
+            this.attachEvent('sourceBuffer', 'updateend')
+            if (this.state === 'opening') {
+                if (this.ws) {
+                    throw new Error('Active WS present when opening')
+                }
+                try {
+                    this.ws = new WebSocket(this.url)
+                } catch {
+                    this.reopen('Could not create WS', timeout)
+                    return
+                }
+                this.ws.binaryType = 'arraybuffer';
+                ['open'].forEach(event => this.attachEvent('ws', event))
+            } else if (this.state === 'resetting') {
+                if (this.ws) {
+                    if (this.ws.readyState === this.ws.OPEN) {
+                        this.ws.send('reset')
+                    } else {
+                        this.debug(`Not sending reset as readystate is ${this.ws.readyState}`)
+                    }
+                }
+            } else {
+                throw new Error(`Invalid state to set up: ${this.state}`)
+            }
+        }
+    },
+    sourceBuffer: {
+        updateend: function() {
+            this.eatPacket()
+        }
+    },
+    ws: {
+        open: function() {
+            if (this.state === 'opening') {;
+                ['message', 'error'].forEach(event => this.attachEvent('ws', event))
+                this.setState('listening')
+            }
+        },
+        message: function(event) {
+            this.readPacket(event.data)
+        },
+        error: function() {
+            this.reopen('WS error, state is playing', this.state === 'playing' ? false : timeout)
+        }
+        // close: function() {
+        //   if (acceptableReadPacketStates.includes(this.state)) {
+        //     this.reopen('WS closing')
+        //   } else if (this.state !== 'closed') {
+        //     this.debug('WS closed, NOT REOPENING, state ' + this.state)
+        //   }
+        // }
+    }
+}
+
+class MSEVideo {
+    constructor(videoEl, url) {
+        this.listeners = {}
+        this.packetCount = 0
+        this.resetCount = 0
+        this.reopenCount = 0
+        this.state = 'closed'
+        this.url = url
+        this.videoEl = videoEl
+        this.videoEl.addEventListener('loadeddata', () => this.videoEl.play())
+        this.open()
+    }
+
+    attachEvent(target, event) {
+        const t = typeof target === 'string' ? this[target] : t
+        if (!this.listeners[target]) {
+            this.listeners[target] = {}
+        }
+        if (!this.listeners[target][event]) {
+            this.listeners[target][event] = e => listeners[target][event].call(this, e)
+        }
+        t.addEventListener(event, this.listeners[target][event])
+    }
+
+    removeEvents(target) {
+        Object.keys(this.listeners[target]).forEach(event => this[target].removeEventListener(event, this.listeners[target][event]))
+    }
+
+    setURL(url) {
+        this.url = url
+        this.reopen('new URL ' + url)
+    }
+
+    reopen(reason, delay) {
+        this.debug(`Reopening in progress for reason: ${reason}`)
+        this.close()
+        this.reopenCount++
+        this.resetCount = 0
+        if (delay) {
+            setTimeout(() => this.open(), delay)
+        } else {
+            this.open()
+        }
+    }
+
+    open() {
+        this.setState('opening')
+        this.setUp()
+    }
+
+    debug(...args) {
+        console.log(this.url, ...args)
+    }
+
+    setState(state) {
+        if (this.state !== state) {
+            this.state = state
+            if (state === 'listening' || state === 'resetting') {
+                this.packetCount = 0
+                this.setTimeout(3 * timeout)
+            }
+        }
+    }
+
+    setUp() {
+        this.mse = new MediaSource()
+        this.videoEl.src = URL.createObjectURL(this.mse)
+        this.videoEl.srcObject = null
+        this.attachEvent('mse', 'sourceopen')
+    }
+
+    readPacket(packet) {
+        if (this.state === 'opening') {
+            this.setState('listening')
+        }
+        if (this.state === 'resetting' && packet.byteLength === 1) {
+            this.setState('listening')
+        } else if (acceptableReadPacketStates.includes(this.state)) {
+            if (this.state !== 'playing') {
+                this.setState('playing')
+            }
+            this.eatPacket(packet)
+        } else {
+            this.debug(`Packet ignored. reset count: ${this.resetCount}; state: ${this.state}`)
+        }
+    }
+
+    bufferPacket(packet) {
+        this.packetCount++
+        if (!this.pendingBuffer) {
+            this.pendingBuffer = packet
+        } else {
+            this.pendingBuffer = concatArrayBuffers(this.pendingBuffer, packet)
+        }
+    }
+
+    reset(reason) {
+        if (this.state === 'playing') {
+            this.clearTimeout()
+            this.debug(`Resetting in progress for reason: ${reason}`)
+            this.setState('resetting')
+            this.resetCount++
+            this.closeVideo()
+            this.setUp()
+        } else {
+            this.debug(`Resetting for ${reason} IGNORED (state is ${this.state})`)
+        }
+    }
+
+    closeVideo() {
+        this.removeEvents('sourceBuffer')
+        delete this.pendingBuffer
+        delete this.sourceBuffer
+        this.videoEl.pause()
+        this.videoEl.removeAttribute('src')
+        this.videoEl.load()
+        delete this.mse
+    }
+
+    close() {
+        this.clearTimeout()
+        this.setState('closing')
+        this.closeVideo()
+        if (this.ws) {
+            this.removeEvents('ws')
+            try {
+                this.ws.close()
+            } catch {}
+            delete this.ws
+        }
+        this.setState('closed')
+    }
+
+    clearTimeout() {
+        if (this.noVideoTimeout !== undefined) {
+            clearTimeout(this.noVideoTimeout)
+            delete this.noVideoTimeout
+        }
+    }
+
+    setTimeout(to) {
+        this.clearTimeout()
+        this.noVideoTimeout = setTimeout(() => {
+            if (this.state === 'playing') {
+                this.reset('No video timeout')
+            } else if (this.state === 'resetting') {
+                this.reopen('No video timeout on resetting')
+            } else if (this.state === 'listening') {
+                this.reopen('No video timeout on listening')
+            } else {
+                this.debug('No video timeout on ' + this.state)
+            }
+        }, to)
+    }
+
+    eatPacket(packet) {
+        if (this.sourceBuffer) {
+            if (packet) {
+                this.bufferPacket(packet)
+            } else if (!this.pendingBuffer) {
+                return
+            }
+            if (this.state !== 'playing') {
+                throw new Error(`Invalid state to eat packet: ${this.state}`)
+            }
+            if (!this.sourceBuffer.updating) {
+                this.setTimeout(timeout)
+                // Go ahead
+                try {
+                    this.sourceBuffer.appendBuffer(this.pendingBuffer)
+                    delete this.pendingBuffer
+                } catch {
+                    this.reset('Append buffer error')
+                }
+            }
+        }
+    }
+}
+
+const waitForDocumentReady = new Promise((resolve) => {
+    if (document.readyState === 'complete') {
+        resolve()
+    } else {
+        addEventListener('load', () => resolve(), { once: true })
+    }
+})
+
+let video
+
+waitForDocumentReady.then(() => {
+    video = new MSEVideo(document.getElementById('video'), url)
+})
+
+addEventListener('beforeunload', () => {
+    if (video) {
+        video.close()
+    }
+})
+</script>
+<style>
+html,
+body {
+    width: 100dvw;
+    height: 100dvh;
+    padding: 0;
+    margin: 0;
+    overflow: hidden;
+}
+
+video {
+    width: 100%;
+    height: 100%;
+    object-fit: fill;
+}
+</style>
+
+<body>
+    <video muted="true" playsinline="true" id="video"></video>
+</body>
+
+</html>

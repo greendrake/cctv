@@ -1,0 +1,23 @@
+# Where to save video files
+BaseDir: /path/to/where/to/save/CCTV/videos
+
+# Port to run HTTP/WebSocket server on. Only needed if you want to watch streams in web browser.
+WebCastPort: ":8080"
+
+# Array of IP cameras to pull video from
+Cameras:
+  - Name: default
+    Address: 192.168.72.150
+    # User: user // "admin" by default
+    # Passsword: pass // empty by default
+    UseRTSP: true # false by default (which assumes DVRIP)
+    Save: [1] # Streams to save to MKV files. "0" is the main (hi-res) stream, "1" is the secondary, low-res.
+    WebCast: [1] # Streams to be ready to webcast over WebSocket. See web-video-demo/index.html for an example of frontend code.
+    HasAudio: true # Whether to save audio track into MKV files (webcasting audio not yet implemented).
+
+  - Name: Mailbox
+    Address: 192.168.72.133
+    User: rtsp
+    Password: rtsp1234
+    Type: BITVISION
+    Save: [1]
