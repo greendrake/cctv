@@ -27,6 +27,7 @@ type Monitor struct {
 func NewMonitor(ctx context.Context, address string) (*Monitor, error) {
 	frameChannel := make(chan *frame.Frame)
 	c := &gortsplib.Client{
+		ParentCtx: ctx,
 		OnPacketLost: func(err error) {
 			// ignore
 		},
@@ -58,7 +59,7 @@ func NewMonitor(ctx context.Context, address string) (*Monitor, error) {
 	var forma *format.H265
 	medi := desc.FindFormat(&forma)
 	if medi == nil {
-		panic("media not found")
+		return nil, errors.New("media not found")
 	}
 
 	// setup RTP -> H264 decoder

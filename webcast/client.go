@@ -46,6 +46,7 @@ func NewClient(c *gin.Context, caster *Caster) *Client {
 		trackID:        byte(0),
 	}
 	client.GetNode().ID = "Client " + uuid.New().String() + ", caster " + caster.GetNode().ID
+	client.GetNode().AllowAbruptStop = true // When stopping browser clients, no need to wait for any queues to flush or anything, just cut them
 	client.SetPrincipallyClient(true)
 	client.SetTask(func(ch chan bool) {
 		client.stopCommandChannel = ch
@@ -54,9 +55,9 @@ func NewClient(c *gin.Context, caster *Caster) *Client {
 	})
 	client.SetIChunkHandler(client.videoChunkHandler)
 	caster.AddClient(client) // client will start receiving frames from the caster now. They will build up in the queue until the muxer is populated
-	// log.Printf("Creating client %v", client.GetNode().ID)
+	// log.Printf("Creating webcast client %v", client.GetNode().ID)
 	// client.On("stop", func(args ...any) {
-	//     log.Printf("Stopped client %v", client.GetNode().ID)
+	// 	log.Printf("Stopped webcast client %v", client.GetNode().ID)
 	// })
 	return client
 }
@@ -145,10 +146,10 @@ func (c *Client) stopAndClose() {
 	if c.ws != nil {
 		defer c.wsWriteMutex.Unlock()
 		c.wsWriteMutex.Lock()
-		_ws := c.ws
-		c.ws = nil
-		_ws.Close()
-		_ws = nil
+		if c.ws != nil {
+			go c.ws.Close()
+			c.ws = nil
+		}
 	}
 	c.Stop()
 }

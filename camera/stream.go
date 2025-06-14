@@ -43,6 +43,7 @@ type Stream struct {
 }
 
 func (s *Stream) makeMonitor() {
+	// Mutex has to be here because multiple callers may call makeMonitor() almost simultaneously
 	s.monitorMakeMutex.Lock()
 	defer s.monitorMakeMutex.Unlock()
 	if s.monitor == nil {
@@ -64,11 +65,12 @@ func (s *Stream) tryToMakeMonitor() bool {
 		s.monitor, err = dvrip.NewMonitor(s.Node.Ctx, s.camera.Address, StreamID2String(s.ID), s.camera.User, s.camera.Password)
 	}
 	if err == nil {
+		// log.Printf("Created monitor for %v", s.GetName())
 		return true
 	} else {
 		s.monitor = nil
 		if _, ok := err.(*util.WrongCredentialsError); ok {
-			log.Printf("Wrong credentials for camera %v", s.camera.Name)
+			log.Printf("Wrong credentials for camera %v", s.GetName())
 			s.camera.IsDisabled = true
 			go s.camera.Stop()
 		}
@@ -146,7 +148,7 @@ func (s *Stream) GetCaster() *webcast.Caster {
 		s.makeMonitor()
 		// If there was a mutex lock and the app was interrupted, s.monitor will still be nil here, so:
 		if s.monitor != nil {
-			cId := "Caster [" + string(s.camera.Name) + ":" + StreamID2String(s.ID) + "]"
+			cId := "Caster [" + s.GetName() + "]"
 			s.caster = webcast.NewCaster()
 			s.caster.CamName = string(s.camera.Name)
 			s.caster.GetNode().ID = cId
@@ -157,4 +159,8 @@ func (s *Stream) GetCaster() *webcast.Caster {
 		}
 	}
 	return s.caster
+}
+
+func (s *Stream) GetName() string {
+	return string(s.camera.Name) + ":" + StreamID2String(s.ID)
 }
